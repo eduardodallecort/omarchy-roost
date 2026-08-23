@@ -609,3 +609,39 @@ test("a stored name that is only whitespace falls back to the class", () => {
   })
   assert.equal(Rules.parseStore(store).rules[0].name, "Signal")
 })
+
+// ------------------------------------------------------- the file on disk
+
+test("no source file carries a NUL byte", () => {
+  // A NUL is a valid character inside a JS string, so two of them sat in the
+  // ruleKey separator through every run of this suite: the code worked, the
+  // tests were green, and nothing said otherwise. Anything that sniffs a file
+  // for one calls it binary — the marketplace security baseline refused to
+  // scan the library and the submission failed validation with "not a
+  // supported text file". The separator is still a NUL at runtime, written as
+  // an escape sequence so the file itself stays text.
+  const { readdirSync, statSync } = require("node:fs")
+  const root = join(__dirname, "..")
+  const sources = []
+  const walk = (dir) => {
+    for (const name of readdirSync(dir)) {
+      if (name === ".git" || name === "node_modules" || name === "screenshots") continue
+      const full = join(dir, name)
+      if (statSync(full).isDirectory()) walk(full)
+      else if (/\.(js|mjs|qml|json|sh|md|ya?ml)$/.test(name)) sources.push(full)
+    }
+  }
+  walk(root)
+  assert.ok(sources.length > 8, `expected to find the sources, found ${sources.length}`)
+  for (const file of sources) {
+    assert.equal(readFileSync(file).includes(0), false, `${file} contains a NUL byte`)
+  }
+})
+
+test("the rule key separates class from title unambiguously", () => {
+  // Which is why the separator is a NUL rather than a space: a title can
+  // contain a space, and these two would otherwise produce the same key.
+  assert.notEqual(
+    Rules.ruleKey({ match: { class: "a b", title: "" } }),
+    Rules.ruleKey({ match: { class: "a", title: "b" } }))
+})
