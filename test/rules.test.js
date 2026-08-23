@@ -261,7 +261,7 @@ test("a corrupt or missing store reads as switched on with no rules", () => {
   // A store that has never been written must not read as "off", or a fresh
   // install would apply nothing and give no reason.
   for (const text of ["not json", "", "{}", "{\"rules\":\"nope\"}"]) {
-    assert.deepEqual(Rules.parseStore(text), { active: true, rules: [] }, text)
+    assert.deepEqual(Rules.parseStore(text), { active: true, rules: [], oversized: false }, text)
   }
 })
 
@@ -644,4 +644,56 @@ test("the rule key separates class from title unambiguously", () => {
   assert.notEqual(
     Rules.ruleKey({ match: { class: "a b", title: "" } }),
     Rules.ruleKey({ match: { class: "a", title: "b" } }))
+})
+
+// ------------------------------------------------- ceilings on outside input
+//
+// Raised by the marketplace maintainer's security review: the store, the
+// generated file and the compositor's output all reach a process that owns the
+// bar, the lock screen and the polkit agent, so none of them may be read
+// without an upper bound.
+
+test("an oversized store is refused rather than read as empty", () => {
+  // Empty and unreadable have to be different answers. Read as empty, the next
+  // save would write an empty store over a file this code could not parse.
+  const padding = "x".repeat(Rules.MAX_STORE_BYTES + 1)
+  const store = Rules.parseStore(padding)
+  assert.equal(store.oversized, true)
+  assert.deepEqual(store.rules, [])
+})
+
+test("a store just inside the limit is still read normally", () => {
+  const win = Rules.normalizeWindow(client(), MONITORS)
+  const rule = Rules.buildRule(win, { workspace: true }, { id: "r1" })
+  const text = Rules.serializeStore([rule], true)
+  assert.ok(text.length < Rules.MAX_STORE_BYTES)
+  const store = Rules.parseStore(text)
+  assert.equal(store.oversized, false)
+  assert.equal(store.rules.length, 1)
+})
+
+test("a corrupt store is not reported as oversized", () => {
+  // The two failures need different handling: unreadable-but-small is safe to
+  // overwrite, oversized is not.
+  const store = Rules.parseStore("not json")
+  assert.equal(store.oversized, false)
+  assert.deepEqual(store.rules, [])
+})
+
+test("the window list is capped however many windows are open", () => {
+  const clients = []
+  for (let i = 0; i < Rules.MAX_CLIENTS + 500; i++) {
+    clients.push(client({ class: "app" + i, focusHistoryID: i, workspace: { id: 9, name: "9" } }))
+  }
+  const windows = Rules.candidateWindows(clients, MONITORS)
+  assert.ok(windows.length <= Rules.MAX_CLIENTS, `got ${windows.length}`)
+  // The cap keeps the most recently focused, which is the end anyone cares
+  // about — the picker is ordered by focus recency.
+  assert.equal(windows[0].class, "app0")
+})
+
+test("the ceilings are sane relative to each other", () => {
+  assert.ok(Rules.MAX_STORE_BYTES > 0 && Rules.MAX_GENERATED_BYTES > 0)
+  assert.ok(Rules.MAX_CAPTURE_BYTES >= Rules.MAX_STORE_BYTES)
+  assert.ok(Rules.MAX_CLIENTS > 100)
 })

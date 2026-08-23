@@ -63,6 +63,11 @@ Item {
   // into a reload every time something touches the store.
   property bool healed: false
 
+  // Set when a file on disk was too large to read. The store being unreadable
+  // is not the same as it being empty: writing over it would destroy rules this
+  // process could not parse, so every write is refused while this holds.
+  property bool storeUnreadable: false
+
   // Whether the generated file has reported back yet — loaded or missing.
   // Distinct from luaFile.loaded, which is false in both the "not read yet"
   // and the "there is no file" cases; healing needs to tell those apart.
@@ -102,9 +107,22 @@ Item {
   }
 
   function _applyCapture(text) {
+    var raw = String(text || "")
+    // At or past the ceiling means the answer was cut, and a cut answer is not
+    // a smaller answer — it is a different one. Said out loud rather than
+    // shown as an empty desktop.
+    if (raw.length >= Rules.MAX_CAPTURE_BYTES) {
+      service.error = qsTr("Hyprland reported more open windows than Roost will read.")
+      service.windows = []
+      service.windowIndex = 0
+      service.capturing = false
+      service.captureFinished()
+      return
+    }
+
     var payload = null
     try {
-      payload = JSON.parse(text)
+      payload = JSON.parse(raw)
     } catch (parseError) {
       payload = null
     }
@@ -188,6 +206,10 @@ Item {
   // check that follows it are asynchronous, because `hyprctl` is a round trip
   // to another process and the panel should not freeze for it.
   function _persist(nextRules, nextActive) {
+    if (storeUnreadable) {
+      error = qsTr("Roost will not write over a rule store it could not read.")
+      return false
+    }
     if (!dirsReady) {
       error = qsTr("Roost's state directory is not ready yet. Try again in a moment.")
       return false
@@ -275,10 +297,43 @@ Item {
     service.error = qsTr("Could not write %1, so nothing changed on disk.").arg(path)
   }
 
+  // Decide, from the measured sizes, which of the two files may be opened.
+  function _openFiles(text) {
+    var parts = String(text || "").trim().split(/\s+/)
+    var storeSize = parseInt(parts[0], 10)
+    var luaSize = parseInt(parts[1], 10)
+    if (!isFinite(storeSize)) storeSize = -1
+    if (!isFinite(luaSize)) luaSize = -1
+
+    if (storeSize >= 0 && storeSize <= Rules.MAX_STORE_BYTES) {
+      storeFile.path = service.storePath
+    } else {
+      // Refuse rather than truncate. Reading part of a rule store would produce
+      // a plausible-looking set of rules that is not the user's.
+      service.storeUnreadable = true
+      service.error = qsTr("%1 is larger than Roost will read, so no rules were loaded and none will be saved over it.")
+        .arg(service.storePath)
+      service._loadStore("")
+    }
+
+    if (luaSize >= 0 && luaSize <= Rules.MAX_GENERATED_BYTES) {
+      luaFile.path = service.luaPath
+    } else {
+      // The generated file is Roost's own and is rewritten wholesale, so an
+      // implausible one is simply not read; the repair path replaces it.
+      service.luaKnown = true
+      Qt.callLater(service._healIfNeeded)
+    }
+  }
+
   // ---------------------------------------------------------------- loading
 
   function _loadStore(text) {
     var store = Rules.parseStore(text)
+    if (store.oversized) {
+      service.storeUnreadable = true
+      service.error = qsTr("Roost's rule store is larger than it will read, so no rules were loaded.")
+    }
     service.rules = store.rules
     service.active = store.active
     service.loaded = true
@@ -297,6 +352,12 @@ Item {
   // On every shell start, for anyone with at least one rule.
   function _healIfNeeded() {
     if (healed || !loaded || !luaKnown || !dirsReady) return
+    // Never repair from a store that could not be read. `rules` is empty in
+    // that case because nothing was parsed, not because there is nothing — and
+    // regenerating from it would rewrite the Hyprland file with no rules at
+    // all, destroying the ones still being applied. Whether this is reached at
+    // all depends on which file view answers first, which is not a guarantee.
+    if (storeUnreadable) return
     healed = true
     var expected = Rules.rulesToLua(rules, active)
     var current = luaFile.loaded ? luaFile.text() : ""
@@ -321,10 +382,30 @@ Item {
         service.error = qsTr("Could not create %1.").arg(service.stateDir)
         return
       }
-      // Only now: a FileView whose directory does not exist yet has nothing to
-      // read and nowhere to write, and the failure is silent.
-      storeFile.path = service.storePath
-      luaFile.path = service.luaPath
+      // The directories exist; now find out how big the two files are before
+      // anything opens them.
+      measureProc.running = true
+    }
+  }
+
+  // Both files are writable by the user and by anything running as them, and a
+  // FileView has no size limit of its own: it reads whatever is there, in full,
+  // into the process that owns the bar and the lock screen. So they are
+  // measured first and only opened if they are a plausible size.
+  Process {
+    id: measureProc
+
+    command: ["bash", "-c",
+      "printf '%s %s' \"$(stat -c%s \"$1\" 2>/dev/null || echo 0)\" \"$(stat -c%s \"$2\" 2>/dev/null || echo 0)\"",
+      "roost", service.storePath, service.luaPath]
+    running: false
+    stdout: StdioCollector {
+      onStreamFinished: service._openFiles(text)
+    }
+    onExited: function (code) {
+      // Unable to measure is unable to open: nothing is assumed about a file
+      // whose size is unknown.
+      if (code !== 0) service._openFiles("")
     }
   }
 
@@ -333,8 +414,17 @@ Item {
 
     // Both queries in one shell so the windows and the monitors they are
     // measured against come from the same instant.
+    //
+    // Each stream is bounded on the way out with `head -c`, and piped rather
+    // than captured in a variable, so no part of this ever holds the whole of
+    // an unbounded `hyprctl` answer — not the subshell, and not the collector
+    // in the shell process. Truncated output does not parse, which is the
+    // point: a partial window list would be read as "these are your windows".
     command: ["bash", "-c",
-      "printf '{\"clients\":%s,\"monitors\":%s}' \"$(hyprctl -j clients)\" \"$(hyprctl -j monitors)\""]
+      "limit=$1; { printf '{\"clients\":'; hyprctl -j clients | head -c \"$limit\";"
+      + " printf ',\"monitors\":'; hyprctl -j monitors | head -c \"$limit\";"
+      + " printf '}'; } | head -c \"$limit\"",
+      "roost", String(Rules.MAX_CAPTURE_BYTES)]
     running: false
     stdout: StdioCollector {
       onStreamFinished: service._applyCapture(text)
