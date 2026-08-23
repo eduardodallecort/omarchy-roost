@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "id": "eduardodallecort.roost",
+  "name": "Roost",
+  "version": "0.1.0",
+  "author": "Eduardo Dalle Cort",
+  "license": "MIT",
+  "description": "Arrange a window how you like it and Roost remembers, so it opens that way from now on. Window rules without writing any.",
+  "kinds": [
+    "service",
+    "panel",
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "service": "Service.qml",
+    "panel": "Panel.qml",
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "Roost",
+    "description": "Remember where a window belongs. Opens the panel that captures the focused window and lists everything already placed.",
+    "category": "Desktop",
+    "allowMultiple": false,
+    "defaultSection": "right"
+  }
+}
