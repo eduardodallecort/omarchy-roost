@@ -90,6 +90,10 @@ Item {
   readonly property var rules: service && Array.isArray(service.rules) ? service.rules : []
   readonly property bool rulesActive: !service || service.active !== false
 
+  // The rule store could not be read, so an empty list means "unknown", not
+  // "none". Everything that would otherwise report emptiness has to say so.
+  readonly property bool rulesUnreadable: !!service && service.storeUnreadable === true
+
   // Index of the rule this window already has, or -1. Computed from `rules`
   // rather than by asking the service, so that saving a rule re-evaluates it:
   // a binding that called a service *method* would depend on the service and
@@ -105,11 +109,13 @@ Item {
     root.undoRule = null
     root.undoIndex = -1
     root.cursor = -1
-    // The receipt shows the service's error ahead of everything else, and only
-    // a successful save cleared it. Without this, a failure from an earlier
-    // session — "Could not create …", "Could not reach Hyprland…" — sits on
-    // every panel the user opens from then on.
-    if (root.service) root.service.error = ""
+    // Clear the last transient failure — "Could not reach Hyprland…" from an
+    // earlier session should not sit on every panel from then on. A standing
+    // condition is not cleared here: a store that could not be read is still
+    // unread when the panel opens again, and erasing the reason for it is how
+    // this panel came to greet someone with three saved rules by telling them
+    // they had none.
+    if (root.service && !root.service.storeUnreadable) root.service.error = ""
     root.opened = true
     if (service) service.capture()
     Qt.callLater(function () { keys.forceActiveFocus() })
@@ -679,7 +685,11 @@ Item {
             Button {
               width: parent.width
               visible: root.hasWindow
-              text: root.replacingIndex >= 0 ? qsTr("Replace rule   ⏎") : qsTr("Remember this window   ⏎")
+              enabled: !root.rulesUnreadable
+              opacity: enabled ? 1 : 0.5
+              text: root.rulesUnreadable
+                ? qsTr("Cannot save while the rule store is unreadable")
+                : (root.replacingIndex >= 0 ? qsTr("Replace rule   ⏎") : qsTr("Remember this window   ⏎"))
               bordered: true
               selected: root.anythingSelected()
               foreground: root.anythingSelected() ? root.ink : root.faint
@@ -771,9 +781,11 @@ Item {
               anchors.left: parent.left
               anchors.verticalCenter: parent.verticalCenter
               foreground: root.ink
-              text: root.rules.length === 0
-                ? qsTr("REMEMBERED · NONE YET")
-                : qsTr("REMEMBERED · %1").arg(root.rules.length)
+              text: {
+                if (root.rulesUnreadable) return qsTr("REMEMBERED · UNKNOWN")
+                if (root.rules.length === 0) return qsTr("REMEMBERED · NONE YET")
+                return qsTr("REMEMBERED · %1").arg(root.rules.length)
+              }
             }
 
             Row {
@@ -811,10 +823,12 @@ Item {
             width: parent.width
             visible: root.rules.length === 0
             wrapMode: Text.WordWrap
-            text: qsTr("Nothing placed yet. Arrange a window the way you want it, press Enter, and it appears here — with a switch to turn it off and a way to forget it.")
+            text: root.rulesUnreadable
+              ? qsTr("Roost could not read your rule store, so it does not know what is in it. Nothing has been lost and nothing will be written over it — the file is still on disk, unchanged.")
+              : qsTr("Nothing placed yet. Arrange a window the way you want it, press Enter, and it appears here — with a switch to turn it off and a way to forget it.")
             font.family: Style.font.family
             font.pixelSize: Style.font.caption
-            color: root.faint
+            color: root.rulesUnreadable ? root.accent : root.faint
           }
 
           Row {
