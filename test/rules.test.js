@@ -697,3 +697,105 @@ test("the ceilings are sane relative to each other", () => {
   assert.ok(Rules.MAX_CAPTURE_BYTES >= Rules.MAX_STORE_BYTES)
   assert.ok(Rules.MAX_CLIENTS > 100)
 })
+
+test("a store holding more rules than the ceiling is refused, not truncated", () => {
+  // Bytes and rules are not the same limit. A store well inside a megabyte can
+  // still declare thousands of rules, and every one of them becomes a window
+  // rule Hyprland evaluates for the rest of the session.
+  const win = Rules.normalizeWindow(client(), MONITORS)
+  const one = Rules.buildRule(win, { workspace: true }, { id: "r1" })
+  const many = []
+  for (let i = 0; i <= Rules.MAX_RULES; i++) {
+    many.push(Object.assign({}, one, { id: "r" + i, match: { class: "app" + i, title: "" } }))
+  }
+  const text = Rules.serializeStore(many, true)
+  assert.ok(text.length < Rules.MAX_STORE_BYTES, "the byte ceiling is not what catches this")
+  const store = Rules.parseStore(text)
+  assert.equal(store.oversized, true)
+  assert.deepEqual(store.rules, [])
+})
+
+test("a store at exactly the rule ceiling is still read", () => {
+  const win = Rules.normalizeWindow(client(), MONITORS)
+  const one = Rules.buildRule(win, { workspace: true }, { id: "r1" })
+  const many = []
+  for (let i = 0; i < Rules.MAX_RULES; i++) {
+    many.push(Object.assign({}, one, { id: "r" + i, match: { class: "app" + i, title: "" } }))
+  }
+  const store = Rules.parseStore(Rules.serializeStore(many, true))
+  assert.equal(store.oversized, false)
+  assert.equal(store.rules.length, Rules.MAX_RULES)
+})
+
+test("a window with an absurd class cannot be turned into a rule", () => {
+  // The class is whatever the application says it is. A megabyte of it would
+  // go into the store, and the store would then be too large to read — every
+  // rule the user has, unreadable, at the choice of any application on the
+  // desktop.
+  const absurd = client({ class: "x".repeat(Rules.MAX_MATCH_LENGTH + 1) })
+  const win = Rules.normalizeWindow(absurd, MONITORS)
+  assert.equal(win.matchable, false)
+  assert.equal(Rules.buildRule(win, { workspace: true }, { id: "r1" }), null)
+  // And it never reaches the panel to be refused there.
+  const offered = Rules.candidateWindows([absurd, client()], MONITORS)
+  assert.deepEqual(offered.map(w => w.class), [client().class])
+})
+
+test("a class at the length limit still works", () => {
+  const win = Rules.normalizeWindow(client({ class: "x".repeat(Rules.MAX_MATCH_LENGTH) }), MONITORS)
+  const rule = Rules.buildRule(win, { workspace: true }, { id: "r1" })
+  assert.ok(rule)
+  assert.equal(rule.match.class.length, Rules.MAX_MATCH_LENGTH)
+})
+
+test("a long title is kept whole, because a cut one matches nothing", () => {
+  // Titles are matched with an anchored pattern. Shortening one produces a
+  // rule that is saved, written, applied — and silently matches no window that
+  // has ever existed. The ceiling is on the class, which an application can
+  // choose unilaterally; a title only reaches the store when the user asks for
+  // "only this window".
+  const title = "t".repeat(Rules.MAX_MATCH_LENGTH * 3)
+  const win = Rules.normalizeWindow(client({ title: title }), MONITORS)
+  const rule = Rules.buildRule(win, { workspace: true }, { id: "r1", matchMode: Rules.MATCH_WINDOW })
+  assert.equal(rule.match.title, title)
+  // And the pattern it generates matches the window it was made from.
+  const pattern = new RegExp(Rules.anchoredPattern(rule.match.title))
+  assert.ok(pattern.test(title))
+})
+
+test("a long title survives a round trip through the store", () => {
+  const title = "t".repeat(Rules.MAX_MATCH_LENGTH * 3)
+  const win = Rules.normalizeWindow(client({ title: title }), MONITORS)
+  const rule = Rules.buildRule(win, { workspace: true }, { id: "r1", matchMode: Rules.MATCH_WINDOW })
+  const store = Rules.parseStore(Rules.serializeStore([rule], true))
+  assert.equal(store.rules.length, 1)
+  assert.equal(store.rules[0].match.title, title)
+})
+
+test("a stored rule with an absurd class is dropped on read", () => {
+  const store = Rules.parseStore(JSON.stringify({
+    version: 1,
+    active: true,
+    rules: [{
+      id: "r1",
+      name: "big",
+      match: { class: "x".repeat(Rules.MAX_MATCH_LENGTH + 1), title: "" },
+      aspects: { tiling: "float" },
+      enabled: true
+    }]
+  }))
+  assert.equal(store.oversized, false)
+  assert.deepEqual(store.rules, [])
+})
+
+test("every stream that reaches the shell process has a ceiling", () => {
+  // Four things arrive from outside: the two files, the window list, and the
+  // compositor's answer to "did that config load". This is the list, so that
+  // adding a fifth without a ceiling fails here rather than in review.
+  for (const name of ["MAX_STORE_BYTES", "MAX_GENERATED_BYTES", "MAX_CAPTURE_BYTES", "MAX_ERRORS_BYTES"]) {
+    assert.equal(typeof Rules[name], "number", `${name} is missing`)
+    assert.ok(Rules[name] > 0 && Rules[name] <= 8 * 1024 * 1024, `${name} is not a sane ceiling`)
+  }
+  // And two on counts, because bytes bound neither of these.
+  assert.ok(Rules.MAX_CLIENTS > 100 && Rules.MAX_RULES > 10 && Rules.MAX_MATCH_LENGTH > 64)
+})

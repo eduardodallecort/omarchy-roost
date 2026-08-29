@@ -276,14 +276,27 @@ indicator on its right edge. `↑` `↓` scroll it as they move the cursor, and 
 heading always states the real total — thirty rules read as "REMEMBERED · 30"
 with five on screen.
 
+Four things reach the shell process from outside Roost — the two files, the
+window list, and Hyprland's answer to "did that config load" — and each is read
+against a ceiling rather than in full. For the rule store that means refusing
+one larger than a megabyte, one declaring more than five hundred rules, or a
+name that turns out not to be a regular file at all. A store it would not read
+is not a store it treats as empty — the panel says the rules are **unknown** rather than
+none, and every save is refused for as long as that holds, because the one thing
+worse than not showing your rules is overwriting them with nothing. The same
+applies while the store is still being read, which on an ordinary machine is a
+few milliseconds and on a stalled filesystem is not.
+
 The switch beside the REMEMBERED heading turns every rule off at once without
 forgetting any of them, which is the first thing to try when you are wondering
 whether Roost is responsible for something. Switched off, the rules stay in
 `roost.lua` as comments, so the file still says what Roost knows.
 
-Forgetting a rule is one keystroke and takes effect at once, so the panel keeps
-the last rule it removed and offers an Undo beside the receipt line — or `u`.
-Reopening the panel clears it.
+Forgetting a rule is one keystroke, so the panel keeps the last rule it removed
+and offers an Undo beside the receipt line — or `u`. Both appear together, and
+only once the change has actually reached the disk: if the write fails, the rule
+stays in the list, the panel says why, and there is nothing to undo because
+nothing happened. Reopening the panel clears it.
 
 ## Keys
 
@@ -302,21 +315,40 @@ Reopening the panel clears it.
 
 ```bash
 node --test
+./test/file-io.sh
 ./test/lua-syntax.sh
+./test/first-run.sh    # needs Quickshell; skips without it
 ```
 
-The first covers the part that decides what a rule says: escaping a class into a
-pattern and a pattern into a Lua literal, reading a window's geometry against the
-right monitor and at the right scale, what is offered for a tiled window versus a
-floating one, which windows the picker offers, the rule store surviving a round
-trip, a corrupt file and a hostile one, and the shape of the tag pair. No
+`node --test` covers the part that decides what a rule says: escaping a class
+into a pattern and a pattern into a Lua literal, reading a window's geometry
+against the right monitor and at the right scale, what is offered for a tiled
+window versus a floating one, which windows the picker offers, the rule store
+surviving a round trip, a corrupt file and a hostile one, the ceiling on every
+input that reaches the shell process, and the shape of the tag pair. No
 dependencies beyond Node's built-in runner.
 
-The second compiles the generated Lua with `luac -p` for a set of class names
-chosen to break naive escaping — dots, backslashes, quotes, `]]`, regex
+`file-io.sh` points a hostile filesystem at the two shell scripts Roost reads
+and writes its files with — a symlink to something enormous, a device that never
+ends, a named pipe that never opens, a target symlinked at one of your own
+files. The scripts are extracted from `Service.qml` rather than copied, so the
+check cannot go on passing while the code it describes drifts away from it.
+
+`lua-syntax.sh` compiles the generated Lua with `luac -p` for a set of class
+names chosen to break naive escaping — dots, backslashes, quotes, `]]`, regex
 metacharacters, non-ASCII. It needs `lua` installed. This check exists because
 Roost's output is loaded by your Hyprland config: a syntax error there is not a
 plugin that fails, it is a desktop that fails.
+
+`first-run.sh` runs the real service against a home directory that has never
+seen Roost, and checks what the other three cannot: that a first install
+finishes loading rather than waiting for a file that will never arrive, writes
+the Hyprland file and no store, does not reload the compositor to install an
+empty one, and then produces both files on the first save. Depending on a state
+file that only exists once the plugin has been used is the ordinary way a first
+install breaks — and it breaks only for people who do not have the file, never
+for whoever wrote it. It runs in CI too, in an Arch container: the service opens
+no windows, so Quickshell drives it headless with no compositor at all.
 
 Every number in this README that could drift was measured against a running
 compositor rather than inferred, and each measurement is pinned in a test:
@@ -343,6 +375,14 @@ compositor rather than inferred, and each measurement is pinned in a test:
   panel; the history still answers with the window you arranged.
 - No network access, no external services, no dependencies at runtime beyond
   `hyprctl`, which Omarchy already has.
+- Both files are read through a descriptor Roost opened itself, and every
+  decision — is this a regular file, is it within the ceiling, how many bytes
+  come back — is made about that descriptor rather than about the name it was
+  opened by. Measuring a path and then reopening it is a check on one file and a
+  read of another, and a symlink defeats it without needing the race at all.
+  They are written by creating a new file and renaming it over the old one, so a
+  reader sees the whole of one version or the whole of the other, and a name
+  pointed at something of yours gets replaced rather than followed.
 
 ## License
 

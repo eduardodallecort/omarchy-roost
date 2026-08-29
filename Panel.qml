@@ -94,6 +94,18 @@ Item {
   // "none". Everything that would otherwise report emptiness has to say so.
   readonly property bool rulesUnreadable: !!service && service.storeUnreadable === true
 
+  // Still reading is the third answer, and it is not "none" either. It is a
+  // matter of milliseconds on any ordinary store, and can be seconds on one
+  // that stalls — the service refuses to write for as long as it lasts, so the
+  // button says why instead of failing when it is pressed.
+  readonly property bool rulesPending: !!service && service.loaded !== true
+
+  // A change that has been accepted but has not landed yet. The receipt line
+  // already gives "Applying…" priority over the notice for exactly this
+  // window; the Undo beside it has to keep the same silence, or it offers to
+  // take back something that has not happened.
+  readonly property bool applyingChange: !!service && service.applying === true
+
   // Index of the rule this window already has, or -1. Computed from `rules`
   // rather than by asking the service, so that saving a rule re-evaluates it:
   // a binding that called a service *method* would depend on the service and
@@ -146,6 +158,18 @@ Item {
 
     function onRuleSaved(name) {
       root.notice = qsTr("Remembered. %1 opens this way from now on.").arg(name)
+      root.undoRule = null
+      root.undoIndex = -1
+    }
+
+    // The receipts below are written the moment a change is accepted, before
+    // the subprocess that writes the two files has answered. When that answer
+    // is a failure the service says so in the status line, and the receipt has
+    // to go with it: "Forgot Signal." beside a Signal that is still listed,
+    // with an Undo for something that never happened, reads as a bug in the
+    // list rather than as the refusal it is.
+    function onWriteFailed() {
+      root.notice = ""
       root.undoRule = null
       root.undoIndex = -1
     }
@@ -210,10 +234,15 @@ Item {
     root.notice = ""
   }
 
+  // Coerced like moveCursor and forgetAt above, and for the same reason: the
+  // shell will invoke this by name over IPC and IPC arguments are always
+  // strings. Untouched, "abc" passed both comparisons — neither is true of a
+  // NaN — and the lookup that followed threw.
   function toggleChipAt(index) {
+    var at = parseInt(index, 10)
     var chips = root.chipModel()
-    if (index < 0 || index >= chips.length) return
-    root.toggleChip(chips[index].key)
+    if (!isFinite(at) || at < 0 || at >= chips.length) return
+    root.toggleChip(chips[at].key)
   }
 
   function anythingSelected() {
@@ -254,11 +283,12 @@ Item {
   function forgetAt(index) {
     var at = parseInt(index, 10)
     if (!isFinite(at) || at < 0 || at >= root.rules.length || !root.service) return
-    // The receipt and the undo are recorded only once the delete has actually
-    // been written. A persist can refuse — the state directory is not ready, or
-    // a previous reload is still in flight — and announcing "Forgot Signal."
-    // beside a Signal that is still listed, with an Undo for something that
-    // never happened, is worse than the refusal it is hiding.
+    // The receipt and the undo are recorded only once the delete has been
+    // accepted. A persist can refuse outright — the state directory is not
+    // ready, or a previous change is still in flight — and announcing "Forgot
+    // Signal." beside a Signal that is still listed is worse than the refusal
+    // it is hiding. A write that is accepted and then fails takes the receipt
+    // back through onWriteFailed above.
     var rule = root.rules[at]
     if (!root.service.forget(at)) return
     root.undoRule = rule
@@ -685,11 +715,13 @@ Item {
             Button {
               width: parent.width
               visible: root.hasWindow
-              enabled: !root.rulesUnreadable
+              enabled: !root.rulesUnreadable && !root.rulesPending
               opacity: enabled ? 1 : 0.5
               text: root.rulesUnreadable
                 ? qsTr("Cannot save while the rule store is unreadable")
-                : (root.replacingIndex >= 0 ? qsTr("Replace rule   ⏎") : qsTr("Remember this window   ⏎"))
+                : root.rulesPending
+                  ? qsTr("Reading your rules…")
+                  : (root.replacingIndex >= 0 ? qsTr("Replace rule   ⏎") : qsTr("Remember this window   ⏎"))
               bordered: true
               selected: root.anythingSelected()
               foreground: root.anythingSelected() ? root.ink : root.faint
@@ -748,7 +780,12 @@ Item {
 
                 anchors.right: parent.right
                 anchors.verticalCenter: parent.verticalCenter
-                visible: !!root.undoRule
+                // Hidden while the change is in flight. It flashed for a frame
+                // otherwise: `forgetAt` records the undo the moment the change
+                // is accepted, and a write that then failed cleared it again a
+                // few milliseconds later. Spotted by Eduardo once the error
+                // message beside it stopped being truncated over the top of it.
+                visible: !!root.undoRule && !root.applyingChange
                 text: root.glyphUndo + " " + qsTr("Undo")
                 font.family: Style.font.family
                 font.pixelSize: Style.font.caption

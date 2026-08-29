@@ -2,18 +2,27 @@ name: CI
 
 # Three things run here, and none of them needs Omarchy installed.
 #
-# The unit tests cover rule generation, escaping and the rule store. The Lua
-# check compiles what the generator writes: Roost's output is required by the
+# The unit tests cover rule generation, escaping and the rule store, and the
+# file-I/O check runs the shell Roost reads and writes with against symlinks,
+# devices, pipes and a directory it cannot write to. The Lua check compiles what
+# the generator writes: Roost's output is required by the
 # user's Hyprland config, so a syntax error there is not a broken plugin, it is
 # a broken desktop, and it is the one failure worth a job of its own. The
 # listing checks cover what the marketplace re-verifies every day for as long as
 # the plugin stays listed — a repository that fails them loses its install
 # button within a day, silently.
 #
+# The first-run job runs the real service under Quickshell, which is the only
+# check here that exercises QML rather than the logic behind it. It needs Arch,
+# because that is where Quickshell is packaged — and tracking Arch is the point
+# rather than the cost: this plugin's host is a rolling distribution, so a job
+# that goes red because Quickshell changed underneath it is telling us something
+# before our users find it.
+#
 # What is deliberately absent: qmllint and `omarchy plugin validate`. Both need
-# the shell's own QML modules on the import path, which do not exist on a
-# runner, so a job pretending to check them would only ever report that it could
-# not resolve the imports.
+# Omarchy's own QML modules on the import path, which the container does not
+# have, so a job pretending to check them would only ever report that it could
+# not resolve the imports. Run both locally before publishing.
 
 on:
   push:
@@ -42,6 +51,12 @@ jobs:
       - name: Run the rule tests
         run: node --test
 
+      # The two scripts Roost reads and writes its files with live as string
+      # literals in Service.qml, where no unit test can reach them. This pulls
+      # them out and points a hostile filesystem at them.
+      - name: The file I/O holds against a hostile filesystem
+        run: ./test/file-io.sh
+
   lua:
     runs-on: ubuntu-latest
     steps:
@@ -59,6 +74,30 @@ jobs:
       - name: Every generated rule file compiles
         run: ./test/lua-syntax.sh
 
+  first-run:
+    runs-on: ubuntu-latest
+    container: archlinux:latest
+    steps:
+      # `extra`, not the AUR, so this is one package and no build.
+      - name: Install Quickshell
+        run: pacman -Syu --noconfirm --needed quickshell git
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # No compositor and no session: the service opens no windows, so it runs
+      # against the offscreen platform with a runtime directory of its own.
+      - name: A machine that has never run Roost
+        env:
+          QT_QPA_PLATFORM: offscreen
+          XDG_RUNTIME_DIR: /tmp/runtime
+          # The script skips when there is no `qs`, which is right for someone
+          # running the suite on a machine without Quickshell and wrong here:
+          # it would report success for a check it never ran.
+          ROOST_REQUIRE_QS: "1"
+        run: |
+          mkdir -p /tmp/runtime
+          ./test/first-run.sh
+
   listable:
     runs-on: ubuntu-latest
     steps:
@@ -75,11 +114,15 @@ jobs:
           jq -e '.id == "eduardodallecort.roost"' manifest.json > /dev/null
           jq -e '.license and .author and .description' manifest.json > /dev/null
 
+      # `entry`, not `path`: in zsh `path` is the array tied to $PATH, and
+      # reading into it empties the shell's search path. This job runs under
+      # bash, where it is an ordinary name — but the line gets copied into a
+      # terminal to debug it, and on Omarchy that terminal is zsh.
       - name: Every declared entry point exists
         run: |
           jq -r '.entryPoints | to_entries[] | .value' manifest.json |
-            while read -r path; do
-              test -f "$path" || { echo "missing entry point: $path"; exit 1; }
+            while read -r entry; do
+              test -f "$entry" || { echo "missing entry point: $entry"; exit 1; }
             done
 
       # Only on a tag build. Pushing the branch skips this; pushing the tag
