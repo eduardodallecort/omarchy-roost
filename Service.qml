@@ -330,7 +330,7 @@ Item {
   // away precisely the part that answers the question — leaving
   // "/home/you/.local/state/omarchy/…" and no file name at all. There are two
   // files, both named in the README, and the name is the whole of what the
-  // reader needs. Reported by Eduardo, looking at a truncated message.
+  // reader needs. Found by reading one that had been cut.
   function _fileName(path) {
     var text = String(path || "")
     var cut = text.lastIndexOf("/")

@@ -783,7 +783,7 @@ Item {
                 // Hidden while the change is in flight. It flashed for a frame
                 // otherwise: `forgetAt` records the undo the moment the change
                 // is accepted, and a write that then failed cleared it again a
-                // few milliseconds later. Spotted by Eduardo once the error
+                // few milliseconds later. It only became visible once the error
                 // message beside it stopped being truncated over the top of it.
                 visible: !!root.undoRule && !root.applyingChange
                 text: root.glyphUndo + " " + qsTr("Undo")
