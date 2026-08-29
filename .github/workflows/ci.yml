@@ -116,8 +116,9 @@ jobs:
 
       # `entry`, not `path`: in zsh `path` is the array tied to $PATH, and
       # reading into it empties the shell's search path. This job runs under
-      # bash, where it is an ordinary name — but the line gets copied into a
-      # terminal to debug it, and on Omarchy that terminal is zsh.
+      # bash, where it is an ordinary name — but a line like this gets pasted
+      # into whatever interactive shell is debugging it, and zsh is a common
+      # enough choice for that to bite. It bit while this file was written.
       - name: Every declared entry point exists
         run: |
           jq -r '.entryPoints | to_entries[] | .value' manifest.json |
