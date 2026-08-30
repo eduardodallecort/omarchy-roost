@@ -259,12 +259,37 @@ Item {
       return false
     }
 
+    // The ceilings on both files apply in both directions: what Roost will not
+    // read, it does not write.
+    //
+    // A window title has no length of its own — the application picks it, and
+    // only the whole capture's four megabytes bound it — so a rule matched on
+    // a long enough one produces a store past the size the reader accepts.
+    // Written, it would be unreadable from the next start, and an unreadable
+    // store refuses every save, which is what keeps Roost from overwriting
+    // rules it cannot see. One title would take the whole rule set with it.
+    //
+    // Refusing here costs the one rule being made and leaves the rest exactly
+    // as they are. Counted in bytes rather than characters, because that is
+    // what the reader measures.
+    var nextLua = Rules.rulesToLua(nextRules, nextActive)
+    var nextStore = Rules.serializeStore(nextRules, nextActive === true)
+    if (Rules.utf8Length(nextLua) > Rules.MAX_GENERATED_BYTES
+        || Rules.utf8Length(nextStore) > Rules.MAX_STORE_BYTES) {
+      // Every caller of _persist reaches this, including turning rules off,
+      // which grows the file rather than shrinking it. So it says what
+      // happened rather than naming a window title that may not be the one
+      // being saved.
+      error = qsTr("Roost could not store that: the result would be too large for it to read back. Nothing changed — forgetting a rule with a very long window title will make room.")
+      return false
+    }
+
     service._previousLua = service.luaText || Rules.rulesToLua([], true)
     service._previousRules = rules
     service._previousActive = active
 
     service.error = ""
-    service._pendingLua = Rules.rulesToLua(nextRules, nextActive)
+    service._pendingLua = nextLua
     service._pendingRules = nextRules
     service._pendingActive = nextActive === true
 
@@ -276,7 +301,7 @@ Item {
     // never had, which nothing settles.
     service._startWrites("persist", [
       { path: service.luaPath, text: service._pendingLua },
-      { path: service.storePath, text: Rules.serializeStore(nextRules, service._pendingActive) }
+      { path: service.storePath, text: nextStore }
     ])
     return true
   }
@@ -438,6 +463,21 @@ Item {
     healed = true
     var expected = Rules.rulesToLua(rules, active)
     if (luaText === expected) return
+    // The same ceiling the save checks, for the same reason — and this is the
+    // path that reaches a store written before that check existed, or by hand.
+    // A store inside its own ceiling still generates a file past this one: a
+    // class and a title are escaped for the regex and then again for the Lua
+    // literal, so a metacharacter arrives four bytes wide, and 400 KB of store
+    // measured 1.2 MB of Lua.
+    //
+    // Written, that file is refused by the reader on the next start, which
+    // reports it as empty, which brings the repair straight back here — a
+    // rewrite and a compositor reload on every start, for as long as the rule
+    // exists, with nothing on screen to say so.
+    if (Rules.utf8Length(expected) > Rules.MAX_GENERATED_BYTES) {
+      service.error = qsTr("A rule here is too large for Roost to write. Your rules are unchanged; forgetting the one with the longest window title will clear it.")
+      return
+    }
     // No reload when there is nothing to apply either way: a fresh install
     // would otherwise reload Hyprland just to install an empty file.
     service._healReload = ruleCount() > 0 || luaText !== ""

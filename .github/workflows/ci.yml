@@ -1,6 +1,6 @@
 name: CI
 
-# Three things run here, and none of them needs Omarchy installed.
+# Four jobs, and none of them needs Omarchy installed.
 #
 # The unit tests cover rule generation, escaping and the rule store, and the
 # file-I/O check runs the shell Roost reads and writes with against symlinks,
@@ -12,12 +12,15 @@ name: CI
 # the plugin stays listed — a repository that fails them loses its install
 # button within a day, silently.
 #
-# The first-run job runs the real service under Quickshell, which is the only
-# check here that exercises QML rather than the logic behind it. It needs Arch,
-# because that is where Quickshell is packaged — and tracking Arch is the point
-# rather than the cost: this plugin's host is a rolling distribution, so a job
-# that goes red because Quickshell changed underneath it is telling us something
-# before our users find it.
+# The qml job is the one that runs QML rather than the logic behind it: the real
+# service against a home directory that has never seen Roost, and a Text
+# rendering a window title written to attack it. Anything that has to be
+# rendered or mounted to be true belongs here rather than in a job of its own,
+# because what these checks share is not a subject — it is a runtime. It needs
+# Arch, because that is where Quickshell is packaged — and tracking Arch is the
+# point rather than the cost: this plugin's host is a rolling distribution, so a
+# job that goes red because Quickshell changed underneath it is telling us
+# something before our users find it.
 #
 # What is deliberately absent: qmllint and `omarchy plugin validate`. Both need
 # Omarchy's own QML modules on the import path, which the container does not
@@ -74,13 +77,15 @@ jobs:
       - name: Every generated rule file compiles
         run: ./test/lua-syntax.sh
 
-  first-run:
+  qml:
     runs-on: ubuntu-latest
     container: archlinux:latest
     steps:
-      # `extra`, not the AUR, so this is one package and no build.
+      # `extra`, not the AUR, so this is one package and no build. python is
+      # for the listener in test/text-format.sh; qml6 arrives with Quickshell's
+      # own dependency on qt6-declarative.
       - name: Install Quickshell
-        run: pacman -Syu --noconfirm --needed quickshell git
+        run: pacman -Syu --noconfirm --needed quickshell git python
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -97,6 +102,18 @@ jobs:
         run: |
           mkdir -p /tmp/runtime
           ./test/first-run.sh
+
+      # Source inspection in the unit tests establishes that every Text
+      # declares Text.PlainText and that every value from outside is made inert
+      # before it reaches a component this plugin cannot set that on. This
+      # renders those strings and watches a socket, so the claim rests on what
+      # Qt does rather than on what the source says.
+      - name: A hostile window title cannot make the shell fetch a URL
+        env:
+          QT_QPA_PLATFORM: offscreen
+          XDG_RUNTIME_DIR: /tmp/runtime
+          ROOST_REQUIRE_QS: "1"
+        run: ./test/text-format.sh
 
   listable:
     runs-on: ubuntu-latest

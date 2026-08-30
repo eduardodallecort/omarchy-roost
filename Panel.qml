@@ -14,6 +14,17 @@ import "lib/Rules.js" as Rules
 // list is therefore always on screen, including when it is empty: a panel that
 // hid it until the first rule existed read as a one-shot dialog with no memory,
 // which is the opposite of what Roost is.
+//
+// Every `Text` here declares `textFormat: Text.PlainText`, including the ones
+// that only ever show a string from this file. The QML default is
+// `Text.AutoText`, which guesses per string whether it is markup, and this
+// panel exists to display the class and title of whatever window is in front —
+// values chosen by that window's application, and a web page writes its own
+// title with one line of JavaScript. Guessed as markup, an `<img>` in one is
+// fetched over the network by the shell process, and a `<span>` in one redraws
+// this panel's own wording. It is declared on every element rather than on the
+// four that carry those values today, because the property is invisible when
+// it is missing and a fifth is one edit away.
 Item {
   id: root
 
@@ -205,16 +216,19 @@ Item {
     if (available.indexOf(Rules.ASPECT_POSITION) !== -1)
       chips.push({
         key: Rules.ASPECT_POSITION,
-        label: Rules.isCentred(w) ? qsTr("centred") : qsTr("at %1, %2").arg(w.x).arg(w.y),
+        label: Rules.isCentred(w) ? qsTr("centred")
+          : Rules.fillOnce(qsTr("at %1, %2"), [w.x, w.y]),
         hint: Rules.isCentred(w)
           ? qsTr("Centred on whichever monitor it opens on.")
           : qsTr("Opens at this spot, measured from the corner of its monitor.")
       })
 
+    // The workspace name is the one other string here Roost does not author,
+    // and a chip label is rendered by a shell component — hence inertText.
     if (available.indexOf(Rules.ASPECT_WORKSPACE) !== -1 && w.workspace)
       chips.push({
         key: Rules.ASPECT_WORKSPACE,
-        label: qsTr("workspace %1").arg(w.workspace.name),
+        label: qsTr("workspace %1").arg(Rules.inertText(w.workspace.name)),
         hint: qsTr("Always opens on this workspace.")
       })
 
@@ -450,6 +464,7 @@ Item {
             Text {
               id: appGlyph
 
+              textFormat: Text.PlainText
               anchors.verticalCenter: parent.verticalCenter
               text: root.glyphApp
               font.family: Style.font.family
@@ -467,6 +482,7 @@ Item {
               spacing: Style.spacing.xxs
 
               Text {
+                textFormat: Text.PlainText
                 width: parent.width
                 text: {
                   if (!root.service || !root.service.loaded) return qsTr("Reading your rules…")
@@ -483,6 +499,7 @@ Item {
               }
 
               Text {
+                textFormat: Text.PlainText
                 width: parent.width
                 wrapMode: Text.WordWrap
                 visible: text !== ""
@@ -519,6 +536,7 @@ Item {
               visible: root.windowCount > 1
 
               Text {
+                textFormat: Text.PlainText
                 anchors.verticalCenter: parent.verticalCenter
                 text: root.glyphPrev
                 font.family: Style.font.family
@@ -536,6 +554,7 @@ Item {
               }
 
               Text {
+                textFormat: Text.PlainText
                 anchors.verticalCenter: parent.verticalCenter
                 text: root.windowNumber + "/" + root.windowCount
                 font.family: Style.font.family
@@ -544,6 +563,7 @@ Item {
               }
 
               Text {
+                textFormat: Text.PlainText
                 anchors.verticalCenter: parent.verticalCenter
                 text: root.glyphNext
                 font.family: Style.font.family
@@ -642,6 +662,7 @@ Item {
               }
 
               Text {
+                textFormat: Text.PlainText
                 width: parent.width
                 wrapMode: Text.WordWrap
                 text: root.anythingSelected()
@@ -670,8 +691,12 @@ Item {
               // chip has no elide: its text sits in a centred Row that grows,
               // so a 40-character Chromium web-app class pushes the control
               // clean off the card. The full class is spelled out underneath.
+              //
+              // Made inert as well, because this label is rendered by a
+              // component Roost does not own and so cannot declare
+              // `textFormat` on. See Rules.inertText.
               options: [
-                { value: Rules.MATCH_APP, label: qsTr("Every %1 window").arg(Rules.shortClass(root.win ? root.win["class"] : "", 22)) },
+                { value: Rules.MATCH_APP, label: qsTr("Every %1 window").arg(Rules.shorten(Rules.inertText(root.win ? root.win["class"] : ""), 22)) },
                 { value: Rules.MATCH_WINDOW, label: qsTr("Only this one") }
               ]
               value: root.matchMode
@@ -685,20 +710,27 @@ Item {
 
             // Always shown, and wrapping rather than elided: this is the only
             // place the class is written out in full, and a rule you cannot
-            // read is a rule you cannot check. The title warning is stated
+            // read is a rule you cannot check. The title is the one thing cut
+            // here — see MAX_SHOWN_TITLE — because it is the only string on
+            // this panel with no ceiling of its own. The title warning is stated
             // where the choice is made rather than in the README, because a
             // rule matched on a title the app rewrites after it opens is the
             // one failure mode of this plugin that looks like Roost simply not
             // working.
             Text {
+              textFormat: Text.PlainText
               width: parent.width
               wrapMode: Text.WrapAnywhere
               visible: root.hasWindow
               text: {
                 if (!root.win) return ""
+                // fillOnce rather than .arg().arg(): both values come from the
+                // application, and chaining lets a `%2` inside the class swallow
+                // the title. See Rules.fillOnce.
                 if (root.matchMode === Rules.MATCH_WINDOW)
-                  return qsTr("Matches class %1 and title “%2”. Apps that rename their window after opening — editors, browsers, terminals — will stop matching.")
-                    .arg(root.win["class"]).arg(root.win.title)
+                  return Rules.fillOnce(
+                    qsTr("Matches class %1 and title “%2”. Apps that rename their window after opening — editors, browsers, terminals — will stop matching."),
+                    [root.win["class"], Rules.shorten(root.win.title, Rules.MAX_SHOWN_TITLE)])
                 return qsTr("Matches class %1.").arg(root.win["class"])
               }
               font.family: Style.font.family
@@ -755,6 +787,7 @@ Item {
               Text {
                 id: receipt
 
+                textFormat: Text.PlainText
                 anchors.left: parent.left
                 anchors.right: undoLink.visible ? undoLink.left : parent.right
                 anchors.rightMargin: undoLink.visible ? Style.spacing.md : 0
@@ -778,6 +811,7 @@ Item {
               Text {
                 id: undoLink
 
+                textFormat: Text.PlainText
                 anchors.right: parent.right
                 anchors.verticalCenter: parent.verticalCenter
                 // Hidden while the change is in flight. It flashed for a frame
@@ -834,6 +868,7 @@ Item {
               visible: root.rules.length > 0
 
               Text {
+                textFormat: Text.PlainText
                 anchors.verticalCenter: parent.verticalCenter
                 text: root.rulesActive ? qsTr("all on") : qsTr("all off")
                 font.family: Style.font.family
@@ -857,6 +892,7 @@ Item {
           // Roost is for, so it is worth its space: a first-time user arrives
           // with no rules and this is the paragraph they read.
           Text {
+            textFormat: Text.PlainText
             width: parent.width
             visible: root.rules.length === 0
             wrapMode: Text.WordWrap
@@ -959,6 +995,7 @@ Item {
                   spacing: Style.spacing.sm
 
                   Text {
+                    textFormat: Text.PlainText
                     text: row.modelData.name
                     elide: Text.ElideRight
                     width: Math.min(implicitWidth, parent.width - offPill.width - parent.spacing)
@@ -974,6 +1011,7 @@ Item {
                   Text {
                     id: offPill
 
+                    textFormat: Text.PlainText
                     anchors.verticalCenter: parent.verticalCenter
                     visible: !row.live
                     text: row.modelData.enabled === false ? qsTr("off") : qsTr("all off")
@@ -984,6 +1022,7 @@ Item {
                 }
 
                 Text {
+                  textFormat: Text.PlainText
                   width: parent.width
                   text: Rules.describeRule(row.modelData)
                     + (row.modelData.match.title ? " · " + qsTr("one window") : "")
@@ -1050,6 +1089,7 @@ Item {
             spacing: Style.spacing.xxs
 
             Text {
+              textFormat: Text.PlainText
               width: parent.width
               elide: Text.ElideRight
               font.family: Style.font.family
@@ -1059,6 +1099,7 @@ Item {
             }
 
             Text {
+              textFormat: Text.PlainText
               width: parent.width
               visible: root.rules.length > 0
               elide: Text.ElideRight

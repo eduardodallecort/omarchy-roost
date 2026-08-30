@@ -429,24 +429,24 @@ test("a class too long for a control is shortened, not left to overflow", () => 
   // The real one, from a Chromium web app.
   const long = "chrome-discord.com__channels_@me-Default"
   assert.equal(long.length, 40)
-  const short = Rules.shortClass(long, 20)
+  const short = Rules.shorten(long, 20)
   assert.equal(short.length, 20)
   assert.ok(short.endsWith("…"), short)
   assert.ok(long.startsWith(short.slice(0, -1)), short)
 })
 
 test("a class that already fits is left alone", () => {
-  assert.equal(Rules.shortClass("foot", 20), "foot")
-  assert.equal(Rules.shortClass("org.gnome.Nautilus", 20), "org.gnome.Nautilus")
+  assert.equal(Rules.shorten("foot", 20), "foot")
+  assert.equal(Rules.shorten("org.gnome.Nautilus", 20), "org.gnome.Nautilus")
 })
 
 test("shortening never returns something longer than asked for", () => {
   for (const n of [4, 8, 20, 64]) {
-    assert.ok(Rules.shortClass("x".repeat(200), n).length <= n, String(n))
+    assert.ok(Rules.shorten("x".repeat(200), n).length <= n, String(n))
   }
   // A nonsense limit falls back rather than producing a one-character label.
-  assert.equal(Rules.shortClass("x".repeat(50), 0).length, 20)
-  assert.equal(Rules.shortClass("", 20), "")
+  assert.equal(Rules.shorten("x".repeat(50), 0).length, 20)
+  assert.equal(Rules.shorten("", 20), "")
 })
 
 
@@ -798,4 +798,184 @@ test("every stream that reaches the shell process has a ceiling", () => {
   }
   // And two on counts, because bytes bound neither of these.
   assert.ok(Rules.MAX_CLIENTS > 100 && Rules.MAX_RULES > 10 && Rules.MAX_MATCH_LENGTH > 64)
+  // And one on what is laid out, which is not the same as what is stored: a
+  // title is kept whole so the rule still matches, and cut before it is drawn.
+  assert.ok(Rules.MAX_SHOWN_TITLE > 40 && Rules.MAX_SHOWN_TITLE < Rules.MAX_MATCH_LENGTH)
+})
+
+test("utf8Length counts what lands on disk, not characters", () => {
+  // The ceilings are byte counts and a JS length is UTF-16 code units. They
+  // agree for everything a Western desktop produces, which is what makes the
+  // difference invisible until somebody's window title is in Japanese.
+  for (const text of ["", "abc", "café", "日本語", "😀", "a😀b", "\ud800"]) {
+    assert.equal(Rules.utf8Length(text), Buffer.byteLength(text, "utf8"), JSON.stringify(text))
+  }
+  assert.equal(Rules.utf8Length(null), 4)
+  assert.equal(Rules.utf8Length(12), 2)
+})
+
+test("a store Roost would refuse to read is one it can tell apart in advance", () => {
+  // The invariant behind the check in Service._persist: what the writer is
+  // about to put on disk is measured the same way the reader measures it, so
+  // "will not read" and "will not write" cannot disagree.
+  const title = "T".repeat(2 * 1024 * 1024)
+  const win = Rules.normalizeWindow(client({ title: title }), MONITORS)
+  const rule = Rules.buildRule(win, { tiling: true }, { id: "r1", matchMode: Rules.MATCH_WINDOW })
+  const store = Rules.serializeStore([rule], true)
+  assert.ok(Rules.utf8Length(store) > Rules.MAX_STORE_BYTES)
+  assert.ok(Rules.utf8Length(Rules.rulesToLua([rule], true)) > Rules.MAX_GENERATED_BYTES)
+  // And this is what would happen on the next start if it were written.
+  assert.equal(Rules.parseStore(store).oversized, true)
+  assert.deepEqual(Rules.parseStore(store).rules, [])
+})
+
+// ----------------------------------------------- text the plugin did not write
+
+test("inertText removes what markup is built from, and nothing else", () => {
+  assert.equal(Rules.inertText('<img src="http://x/y.png">'), 'img src="http://x/y.png">')
+  assert.equal(Rules.inertText("Steam&nbsp;Client"), "Steamnbsp;Client")
+  assert.equal(Rules.inertText("org.gnome.Nautilus"), "org.gnome.Nautilus")
+  // Inert is not the whole job: what is left has to stay worth reading, since
+  // this is a label somebody uses to tell one rule from another.
+  assert.equal(Rules.inertText("My Bank — Login<img src=x>"), "My Bank — Loginimg src=x>")
+  assert.equal(Rules.inertText("kitty"), "kitty")
+  // A class is whatever the application says it is, including nothing at all.
+  assert.equal(Rules.inertText(null), "")
+  assert.equal(Rules.inertText(undefined), "")
+  assert.equal(Rules.inertText(0), "0")
+  // Every occurrence, not the first: one tag is enough and there is no reason
+  // an attacker would stop at one.
+  assert.equal(Rules.inertText("<a><b><c>"), "a>b>c>")
+})
+
+// Which Text element each line of Panel.qml sits inside.
+//
+// Braces are counted whether they open an element or a JavaScript block, so
+// the depth stays right either way; only element-opening lines put a name on
+// the stack. The parser asserts it ends where it started, which is what makes
+// a wrong answer here fail loudly rather than quietly.
+function enclosingElements(source) {
+  const lines = source.split("\n")
+  const stack = []
+  const out = []
+  for (const line of lines) {
+    const bare = line.replace(/\/\/.*$/, "")
+    const opens = (bare.match(/\{/g) || []).length
+    const closes = (bare.match(/\}/g) || []).length
+    const element = bare.match(/^\s*([A-Z]\w*)\s*\{\s*$/)
+    out.push({ line, inside: stack.slice() })
+    for (let i = 0; i < opens; i++) stack.push(i === 0 && element ? element[1] : null)
+    for (let i = 0; i < closes; i++) stack.pop()
+  }
+  assert.equal(stack.length, 0, "the QML brace count does not balance")
+  return out
+}
+
+test("every Text in Panel.qml is PlainText", () => {
+  // Text.AutoText, the default, decides per string whether it is markup. The
+  // panel shows the class and title of whatever window is in front, both of
+  // them written by that window's application, so a title shaped like an
+  // <img> tag is fetched over the network by the shell process. Declared on
+  // every element rather than on the four that carry an untrusted value
+  // today: a missing property is invisible, and a fifth element is one edit
+  // away. test/text-format.sh renders this and watches a socket.
+  const source = readFileSync(join(__dirname, "..", "Panel.qml"), "utf8")
+  const code = source.replace(/\/\/.*$/gm, "")
+  // Every way of declaring one, not only the way they happen to be written
+  // today: a `Text { text: … }` on a single line is exactly the edit this test
+  // exists to catch, and splitting on an anchored line would not see it.
+  const declared = (code.match(/\bText\s*\{/g) || []).length
+  const blocks = source.split(/^\s*Text \{$/m).slice(1)
+  assert.equal(blocks.length, declared,
+    `${declared} Text elements declared, ${blocks.length} of them on their own line`)
+  assert.ok(blocks.length >= 17, `expected the Text elements, found ${blocks.length}`)
+  for (const [i, block] of blocks.entries()) {
+    const head = block.split(/\n\s*\}/)[0]
+    assert.match(head, /textFormat: Text\.PlainText/,
+      `Text element ${i + 1} in Panel.qml does not declare textFormat`)
+  }
+  // Counted with the comments stripped, because this convention is explained
+  // in one of them and would otherwise count itself.
+  assert.equal((code.match(/textFormat:/g) || []).length, blocks.length)
+  assert.equal(code.match(/textFormat: (?!Text\.PlainText)/), null)
+})
+
+test("no sentence is built by chaining arg", () => {
+  // String.arg rescans what the previous call inserted, so a `%2` inside an
+  // application's own window class swallows the title that was meant for it.
+  // One call is safe however hostile its value; two are not.
+  for (const name of ["Panel.qml", "Service.qml", "BarWidget.qml"]) {
+    const code = readFileSync(join(__dirname, "..", name), "utf8").replace(/\/\/.*$/gm, "")
+    assert.equal(code.match(/\.arg\([^\n]*\)\s*\.arg\(/), null,
+      `${name} chains .arg() — use Rules.fillOnce`)
+  }
+})
+
+test("fillOnce cannot read a value as a marker", () => {
+  assert.equal(Rules.fillOnce("class %1 title %2", ["kitty", "vim"]), "class kitty title vim")
+  // The value that breaks the chained form.
+  assert.equal(
+    Rules.fillOnce("class %1 title %2", ["chrome-ex.com__a%2Fb-Default", "MY_TITLE"]),
+    "class chrome-ex.com__a%2Fb-Default title MY_TITLE")
+  // And the trivial version of it: a class that is only the marker.
+  assert.equal(Rules.fillOnce("%1 %2", ["%2", "T"]), "%2 T")
+  // A marker with nothing to fill it is left alone rather than blanked.
+  assert.equal(Rules.fillOnce("%1 %2", ["only"]), "only %2")
+  assert.equal(Rules.fillOnce("%1", []), "%1")
+})
+
+test("shorten never cuts through a character", () => {
+  // Two code units each, so a naive cut at an odd offset splits one in half and
+  // the panel draws a replacement box.
+  const emoji = "😀".repeat(200)
+  for (let limit = 4; limit < 40; limit++) {
+    const cut = Rules.shorten(emoji, limit)
+    assert.ok(cut.length <= limit, `limit ${limit}`)
+    for (const ch of cut) assert.notEqual(ch.codePointAt(0), 0xfffd)
+    assert.equal(/[\ud800-\udbff]$/.test(cut.slice(0, -1)), false, `lone surrogate at limit ${limit}`)
+  }
+  assert.equal(Rules.shorten("abcdefghij", 5), "abcd…")
+})
+
+test("no untrusted value reaches a component Roost does not own", () => {
+  // Setting textFormat only works on the elements this file declares. A shell
+  // Button or ButtonGroup renders its label through a Text of its own, which
+  // is AutoText like every default and cannot be reached from out here — so a
+  // value from outside has to be made inert before it is handed over.
+  //
+  // This is the list of values Hyprland reports that Roost did not write. Add
+  // to it when the panel starts showing another one.
+  const untrusted = [
+    /win\["class"\]/,
+    /win\.title/,
+    /workspace\.name/,
+    /modelData\.name/,
+    /service\.error/,
+    /win\.monitor/,
+    // Roost's own wording, but it interpolates a rule name into itself.
+    /root\.notice/
+  ]
+  // Reading one of these, or clearing it, is not showing it. What counts is a
+  // line that puts the value into something a component will render — so an
+  // assignment is judged by what it stores, not by what it stores into.
+  const displays = /\b(text|label|tooltipText):|\.arg\(/
+  const source = readFileSync(join(__dirname, "..", "Panel.qml"), "utf8")
+  let seen = 0
+  for (const { line, inside } of enclosingElements(source)) {
+    const bare = line.replace(/\/\/.*$/, "")
+    const assignment = bare.match(/^\s*[\w.[\]"']+\s*=(?!=)\s*(.*)$/)
+    const value = assignment ? assignment[1] : bare
+    if (!untrusted.some((p) => p.test(value))) continue
+    // The nearest *named* element, skipping the JavaScript blocks a
+    // multi-line `text:` binding opens: a line inside one of those is still
+    // inside the Text that declares it.
+    const element = inside.filter(Boolean).pop()
+    const rendered = element === "Text" || displays.test(value)
+    if (!rendered) continue
+    seen++
+    if (element === "Text") continue
+    assert.match(value, /Rules\.inertText\(/,
+      `an untrusted value outside a Text is not made inert:\n${line}`)
+  }
+  assert.ok(seen >= 8, `expected to find the untrusted values, found ${seen}`)
 })

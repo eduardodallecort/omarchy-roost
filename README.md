@@ -287,6 +287,22 @@ worse than not showing your rules is overwriting them with nothing. The same
 applies while the store is still being read, which on an ordinary machine is a
 few milliseconds and on a stalled filesystem is not.
 
+The ceilings hold in the other direction too: Roost does not write a file it
+would refuse to read. A window title has no length of its own — the application
+picks it — so a rule matched on a very long one would produce a store past the
+size Roost reads, and from the next start that store would be unreadable, which
+refuses every save and takes the rest of your rules with it. The save is refused
+instead, at the moment you make it, with everything already remembered
+untouched.
+
+The same applies to the repair that runs at startup, and there it is not the
+same ceiling: a class and a title are escaped for Hyprland's pattern and then
+again for the Lua literal, so a store comfortably inside its own limit can
+generate a rule file past that one. Rather than write it, Roost leaves both
+files alone and says so — otherwise it would write a file it could not read
+back, find it missing on the next start, and rewrite it again on every start
+after that.
+
 The switch beside the REMEMBERED heading turns every rule off at once without
 forgetting any of them, which is the first thing to try when you are wondering
 whether Roost is responsible for something. Switched off, the rules stay in
@@ -317,7 +333,8 @@ nothing happened. Reopening the panel clears it.
 node --test
 ./test/file-io.sh
 ./test/lua-syntax.sh
-./test/first-run.sh    # needs Quickshell; skips without it
+./test/first-run.sh      # needs Quickshell; skips without it
+./test/text-format.sh    # needs qml6 and python3; skips without them
 ```
 
 `node --test` covers the part that decides what a rule says: escaping a class
@@ -340,15 +357,26 @@ metacharacters, non-ASCII. It needs `lua` installed. This check exists because
 Roost's output is loaded by your Hyprland config: a syntax error there is not a
 plugin that fails, it is a desktop that fails.
 
-`first-run.sh` runs the real service against a home directory that has never
-seen Roost, and checks what the other three cannot: that a first install
-finishes loading rather than waiting for a file that will never arrive, writes
-the Hyprland file and no store, does not reload the compositor to install an
-empty one, and then produces both files on the first save. Depending on a state
-file that only exists once the plugin has been used is the ordinary way a first
-install breaks — and it breaks only for people who do not have the file, never
-for whoever wrote it. It runs in CI too, in an Arch container: the service opens
-no windows, so Quickshell drives it headless with no compositor at all.
+`first-run.sh` runs the real service against the state a machine actually has,
+which is what the pure tests cannot reach. A home directory that has never seen
+Roost: the service finishes loading rather than waiting for a file that will
+never arrive, writes the Hyprland file and no store, does not reload the
+compositor to install an empty one, and produces both files on the first save.
+Depending on a state file that only exists once the plugin has been used is the
+ordinary way a first install breaks — and it breaks only for people who do not
+have the file, never for whoever wrote it. Then the three ways a file can be
+the wrong size: a window title too long to store is refused rather than saved,
+a store already past the reading ceiling is left exactly as it is, and a store
+inside its ceiling whose generated file is past *its* ceiling is not written and
+does not reload Hyprland — on that start or any later one.
+
+It runs in CI, in an Arch container: the service opens no windows, so Quickshell
+drives it headless with no compositor at all.
+
+`text-format.sh` renders a window title written to attack the shell — an `<img>`
+tag pointing at a listener on this machine — and checks that the socket stays
+quiet. The first case in it is a control that must *fetch*, because a beacon
+that has stopped working would otherwise report every case as safe.
 
 Every number in this README that could drift was measured against a running
 compositor rather than inferred, and each measurement is pinned in a test:
@@ -375,6 +403,17 @@ compositor rather than inferred, and each measurement is pinned in a test:
   panel; the history still answers with the window you arranged.
 - No network access, no external services, no dependencies at runtime beyond
   `hyprctl`, which Omarchy already has.
+- Every piece of text on the panel is drawn as plain text. A window's class and
+  title are chosen by the application that owns the window — a web page writes
+  its own title in one line of JavaScript — and QML's default is to guess, per
+  string, whether it is markup. Guessed as markup, an `<img>` in a title is a
+  URL the shell process fetches. The two labels Roost hands to a control it does
+  not draw itself have those characters removed instead, since the property
+  cannot be set from outside.
+- Roost never writes a file it would refuse to read. The ceilings on both files
+  apply in both directions, counted in bytes rather than characters, so a title
+  long enough to make the store unreadable is refused at the save with the rest
+  of your rules left alone.
 - Both files are read through a descriptor Roost opened itself, and every
   decision — is this a regular file, is it within the ceiling, how many bytes
   come back — is made about that descriptor rather than about the name it was
