@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "eduardodallecort.roost",
   "name": "Roost",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "author": "Eduardo Dalle Cort",
   "license": "MIT",
   "description": "Arrange a window how you like it and Roost remembers, so it opens that way from now on. Window rules without writing any.",
